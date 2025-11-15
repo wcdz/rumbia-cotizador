@@ -23,11 +23,20 @@ _boton_macro_cache: Optional[str] = None
 # Cache para resultados de cotizaciones (key: hash de parámetros, value: tupla de resultados)
 _cotizaciones_cache: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]] = {}
 
+# Cache para colecciones de cotizaciones (key: hash de parámetros, value: CotizacionColeccionResponse)
+_colecciones_cache: Dict[str, 'CotizacionColeccionResponse'] = {}
+
 
 def _generar_cache_key(edad_actuarial: int, sexo: str, prima: float, periodo_pago: int) -> str:
     """Genera una clave única para el cache basada en los parámetros"""
     # Crear un hash de los parámetros para usar como clave
     params_str = f"{edad_actuarial}_{sexo}_{prima}_{periodo_pago}"
+    return hashlib.md5(params_str.encode()).hexdigest()
+
+
+def _generar_cache_key_coleccion(edad_actuarial: int, sexo: str, prima: float) -> str:
+    """Genera una clave única para el cache de colecciones"""
+    params_str = f"coleccion_{edad_actuarial}_{sexo}_{prima}"
     return hashlib.md5(params_str.encode()).hexdigest()
 
 # Ruta al archivo Excel
@@ -361,10 +370,19 @@ class CotizacionService:
                 "rentabilidad": None
             }
     
-    def crear_cotizacion_coleccion(self, request: CotizacionColeccionRequest, generar_imagen: bool = True) -> CotizacionColeccionResponse:
+    def crear_cotizacion_coleccion(self, request: CotizacionColeccionRequest, generar_imagen: bool = True, usar_cache: bool = True) -> CotizacionColeccionResponse:
         """
         Crea cotizaciones para todos los periodos disponibles de una prima específica
         """
+        global _colecciones_cache
+        
+        # Verificar cache primero
+        if usar_cache:
+            cache_key = _generar_cache_key_coleccion(request.edad_actuarial, request.sexo, request.prima)
+            if cache_key in _colecciones_cache:
+                print(f"[CACHE COLECCIÓN] Resultado encontrado en cache para: prima={request.prima}, edad={request.edad_actuarial}, sexo={request.sexo}")
+                return _colecciones_cache[cache_key]
+        
         # Obtener periodos disponibles para la prima
         periodos_disponibles = self._obtener_periodos_para_prima(request.prima)
         
@@ -455,11 +473,35 @@ class CotizacionService:
                 print(f"[ERROR] No se pudo generar la imagen: {str(e)}")
                 traceback.print_exc()
         
-        return CotizacionColeccionResponse(
+        # Crear respuesta
+        response = CotizacionColeccionResponse(
             prima=request.prima,
             periodos_disponibles=periodos_disponibles,
             cotizaciones=cotizaciones,
             total_cotizaciones=len(cotizaciones),
             imagen_base64=imagen_base64
         )
+        
+        # Guardar en cache
+        if usar_cache:
+            cache_key = _generar_cache_key_coleccion(request.edad_actuarial, request.sexo, request.prima)
+            _colecciones_cache[cache_key] = response
+            print(f"[CACHE COLECCIÓN] Resultado guardado en cache para: prima={request.prima}, edad={request.edad_actuarial}, sexo={request.sexo}")
+        
+        return response
+    
+    def limpiar_cache_colecciones(self) -> int:
+        """Limpia el cache de colecciones y retorna el número de elementos eliminados"""
+        global _colecciones_cache
+        cantidad = len(_colecciones_cache)
+        _colecciones_cache.clear()
+        print(f"[CACHE COLECCIÓN] Cache limpiado: {cantidad} elementos eliminados")
+        return cantidad
+    
+    def obtener_estadisticas_cache(self) -> Dict:
+        """Obtiene estadísticas del cache"""
+        return {
+            "cache_cotizaciones": len(_cotizaciones_cache),
+            "cache_colecciones": len(_colecciones_cache)
+        }
 

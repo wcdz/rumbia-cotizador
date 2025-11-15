@@ -1,4 +1,5 @@
 from fastapi import APIRouter, status
+from typing import Dict
 from app.schemas.cotizacion import (
     CotizacionCreate, 
     CotizacionResponse,
@@ -56,4 +57,32 @@ async def generar_imagen_cotizacion(request: ImageGenerationRequest):
         nombre_archivo=nombre_archivo,
         mensaje=f"Imagen generada exitosamente: {nombre_archivo}"
     )
+
+
+@router.delete("/cotizaciones/cache", status_code=status.HTTP_200_OK)
+async def limpiar_cache() -> Dict:
+    """
+    Limpia el cache de colecciones de cotizaciones
+    
+    Útil cuando se actualizan los datos del Excel o configuraciones.
+    """
+    cantidad = service.limpiar_cache_colecciones()
+    return {
+        "mensaje": "Cache limpiado exitosamente",
+        "elementos_eliminados": cantidad
+    }
+
+
+@router.get("/cotizaciones/cache/estadisticas", status_code=status.HTTP_200_OK)
+async def obtener_estadisticas_cache() -> Dict:
+    """
+    Obtiene estadísticas del cache
+    
+    Muestra cuántos elementos hay en cache actualmente.
+    """
+    stats = service.obtener_estadisticas_cache()
+    return {
+        "estadisticas": stats,
+        "mensaje": "Estadísticas obtenidas exitosamente"
+    }
 
