@@ -69,4 +69,20 @@ class CotizacionColeccionResponse(BaseModel):
     periodos_disponibles: List[int] = Field(..., description="Periodos disponibles para esta prima")
     cotizaciones: List[CotizacionPorPeriodo] = Field(..., description="Lista de cotizaciones por periodo")
     total_cotizaciones: int = Field(..., description="Total de cotizaciones generadas")
+    imagen_base64: Optional[str] = Field(None, description="Imagen en base64")
 
+
+# Schemas para generación de imágenes
+class ImageGenerationRequest(BaseModel):
+    """Request para generar imagen de cotización"""
+    prima: float = Field(..., ge=0, description="Prima del seguro")
+    edad_actuarial: int = Field(..., ge=0, description="Edad actuarial del cliente")
+    sexo: Literal["M", "F"] = Field(..., description="Sexo del cliente (M o F)")
+    nombre_archivo: Optional[str] = Field(None, description="Nombre opcional para el archivo (sin extensión)")
+
+
+class ImageGenerationResponse(BaseModel):
+    """Respuesta para generación de imagen"""
+    ruta_archivo: str = Field(..., description="Ruta del archivo generado")
+    nombre_archivo: str = Field(..., description="Nombre del archivo generado")
+    mensaje: str = Field(..., description="Mensaje de confirmación")

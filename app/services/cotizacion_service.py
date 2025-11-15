@@ -361,7 +361,7 @@ class CotizacionService:
                 "rentabilidad": None
             }
     
-    def crear_cotizacion_coleccion(self, request: CotizacionColeccionRequest) -> CotizacionColeccionResponse:
+    def crear_cotizacion_coleccion(self, request: CotizacionColeccionRequest, generar_imagen: bool = True) -> CotizacionColeccionResponse:
         """
         Crea cotizaciones para todos los periodos disponibles de una prima específica
         """
@@ -374,7 +374,8 @@ class CotizacionService:
                 prima=request.prima,
                 periodos_disponibles=[],
                 cotizaciones=[],
-                total_cotizaciones=0
+                total_cotizaciones=0,
+                imagen_base64=None
             )
         
         # Generar cotizaciones para cada periodo
@@ -423,10 +424,42 @@ class CotizacionService:
                 cotizacion=cotizacion_detalle
             ))
         
+        # Generar imagen si se solicita
+        imagen_base64 = None
+        if generar_imagen and cotizaciones:
+            try:
+                from app.services.image_service import ImageService
+                image_service = ImageService()
+                
+                # Crear data para la imagen
+                data = {
+                    "prima": request.prima,
+                    "periodos_disponibles": periodos_disponibles,
+                    "cotizaciones": [
+                        {
+                            "periodo": cot.periodo,
+                            "cotizacion": cot.cotizacion.model_dump()
+                        }
+                        for cot in cotizaciones
+                    ]
+                }
+                
+                # Generar imagen con base64 directamente
+                _, imagen_base64 = image_service.generar_grafico_cotizacion(
+                    data=data,
+                    nombre_archivo=f"cotizacion_prima{int(request.prima)}_edad{request.edad_actuarial}_{request.sexo}",
+                    retornar_base64=True
+                )
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] No se pudo generar la imagen: {str(e)}")
+                traceback.print_exc()
+        
         return CotizacionColeccionResponse(
             prima=request.prima,
             periodos_disponibles=periodos_disponibles,
             cotizaciones=cotizaciones,
-            total_cotizaciones=len(cotizaciones)
+            total_cotizaciones=len(cotizaciones),
+            imagen_base64=imagen_base64
         )
 
