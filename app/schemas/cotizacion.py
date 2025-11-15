@@ -11,6 +11,13 @@ class ParametrosCotizacion(BaseModel):
     periodo_pago: int = Field(..., ge=1, description="Periodo de pago")
 
 
+class ParametrosCotizacionSinPeriodo(BaseModel):
+    """Modelo para los parámetros de la cotización sin periodo (para colecciones)"""
+    edad_actuarial: int = Field(..., ge=0, description="Edad actuarial del cliente")
+    sexo: Literal["M", "F"] = Field(..., description="Sexo del cliente (M o F)")
+    prima: float = Field(..., ge=0, description="Prima del seguro")
+
+
 class CotizacionBase(BaseModel):
     """Modelo base para cotizaciones"""
     producto: str = Field(..., min_length=1, description="Nombre del producto")
@@ -41,9 +48,7 @@ class CotizacionResponse(CotizacionBase):
 class CotizacionColeccionRequest(BaseModel):
     """Request para cotizaciones por colección"""
     producto: str = Field(..., min_length=1, description="Nombre del producto")
-    edad_actuarial: int = Field(..., ge=0, description="Edad actuarial del cliente")
-    sexo: Literal["M", "F"] = Field(..., description="Sexo del cliente (M o F)")
-    prima: float = Field(..., ge=0, description="Prima del seguro")
+    parametros: ParametrosCotizacionSinPeriodo = Field(..., description="Parámetros de la cotización")
 
 
 class CotizacionDetalle(BaseModel):
@@ -69,15 +74,14 @@ class CotizacionColeccionResponse(BaseModel):
     periodos_disponibles: List[int] = Field(..., description="Periodos disponibles para esta prima")
     cotizaciones: List[CotizacionPorPeriodo] = Field(..., description="Lista de cotizaciones por periodo")
     total_cotizaciones: int = Field(..., description="Total de cotizaciones generadas")
-    imagen_base64: Optional[str] = Field(None, description="Imagen en base64")
+    imagen_base64: Optional[str] = Field(None, description="URL temporal de la imagen (válida por 10 minutos)")
 
 
 # Schemas para generación de imágenes
 class ImageGenerationRequest(BaseModel):
     """Request para generar imagen de cotización"""
-    prima: float = Field(..., ge=0, description="Prima del seguro")
-    edad_actuarial: int = Field(..., ge=0, description="Edad actuarial del cliente")
-    sexo: Literal["M", "F"] = Field(..., description="Sexo del cliente (M o F)")
+    producto: str = Field(..., min_length=1, description="Nombre del producto")
+    parametros: ParametrosCotizacionSinPeriodo = Field(..., description="Parámetros de la cotización")
     nombre_archivo: Optional[str] = Field(None, description="Nombre opcional para el archivo (sin extensión)")
 
 

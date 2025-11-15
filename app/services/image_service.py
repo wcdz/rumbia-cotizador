@@ -6,8 +6,8 @@ from typing import Dict, List, Optional
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib
+import requests
 matplotlib.use('Agg')  # Backend sin GUI para entornos de servidor
-import pandas as pd
 
 
 class ImageService:
@@ -22,7 +22,51 @@ class ImageService:
         # Crear carpeta db si no existe
         os.makedirs(self.output_dir, exist_ok=True)
     
-    def generar_grafico_cotizacion(self, data: Dict, nombre_archivo: str = None, retornar_base64: bool = False) -> tuple[str, Optional[str]]:
+    def subir_imagen_temporal(self, ruta_archivo: str) -> Optional[str]:
+        """
+        Sube una imagen a tmpfiles.org y devuelve la URL pública
+        El archivo expira automáticamente después de 1 hora
+        
+        Args:
+            ruta_archivo: Ruta al archivo de imagen
+            
+        Returns:
+            URL pública de la imagen o None si falla
+        """
+        try:
+            # Abrir el archivo
+            with open(ruta_archivo, "rb") as file:
+                files = {
+                    'file': ('cotizacion.jpg', file, 'image/jpeg')
+                }
+                
+                # Subir a tmpfiles.org (sin necesidad de API key)
+                response = requests.post(
+                    'https://tmpfiles.org/api/v1/upload',
+                    files=files,
+                    timeout=15
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("status") == "success":
+                        # tmpfiles.org devuelve una URL que necesita ser ajustada
+                        url = data["data"]["url"]
+                        # Convertir de https://tmpfiles.org/123456 a https://tmpfiles.org/dl/123456
+                        url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                        print(f"[INFO] Imagen subida exitosamente a: {url}")
+                        return url
+                
+                print(f"[ERROR] Error al subir imagen a tmpfiles: {response.text}")
+                return None
+                
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] Excepción al subir imagen: {str(e)}")
+            traceback.print_exc()
+            return None
+    
+    def generar_grafico_cotizacion(self, data: Dict, nombre_archivo: str = None, retornar_base64: bool = False, subir_temporal: bool = False) -> tuple[str, Optional[str]]:
         """
         Genera un gráfico de cotización con tabla resumen y lo guarda como JPEG
         
@@ -30,9 +74,10 @@ class ImageService:
             data: Diccionario con la estructura de cotización por colección
             nombre_archivo: Nombre opcional para el archivo (sin extensión)
             retornar_base64: Si True, también devuelve la imagen en base64
+            subir_temporal: Si True, sube la imagen a un servicio temporal y devuelve la URL
         
         Returns:
-            Tupla (ruta_archivo, base64_string o None)
+            Tupla (ruta_archivo, base64_string/url_temporal o None)
         """
         # Generar nombre de archivo si no se proporciona
         if nombre_archivo is None:
@@ -137,20 +182,21 @@ class ImageService:
         # Ajustar layout y guardar
         plt.tight_layout()
         
-        # Generar base64 si se solicita
-        base64_string = None
-        if retornar_base64:
-            buffer = BytesIO()
-            plt.savefig(buffer, format='jpeg', dpi=300, bbox_inches='tight')
-            buffer.seek(0)
-            base64_string = base64.b64encode(buffer.read()).decode('utf-8')
-            buffer.close()
-        
         # Guardar archivo
         plt.savefig(archivo_salida, format='jpeg', dpi=300, bbox_inches='tight')
         plt.close(fig)
         
-        return archivo_salida, base64_string
+        # Generar base64 o URL temporal según se solicite
+        resultado = None
+        if subir_temporal:
+            # Subir a servicio temporal y obtener URL
+            resultado = self.subir_imagen_temporal(archivo_salida)
+        elif retornar_base64:
+            # Leer archivo y convertir a base64
+            with open(archivo_salida, 'rb') as f:
+                resultado = base64.b64encode(f.read()).decode('utf-8')
+        
+        return archivo_salida, resultado
     
     def _format_number(self, num: float) -> str:
         """

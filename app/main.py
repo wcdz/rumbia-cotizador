@@ -1,5 +1,7 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.routers import cotizaciones
 
 app = FastAPI(
@@ -16,6 +18,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Crear directorio para imágenes si no existe
+os.makedirs("db", exist_ok=True)
+
+# Servir archivos estáticos (imágenes)
+app.mount("/images", StaticFiles(directory="db"), name="images")
 
 # Incluir routers
 app.include_router(cotizaciones.router, prefix="/api/v1", tags=["cotizaciones"])

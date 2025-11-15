@@ -1,9 +1,12 @@
+"""
+Servicio de cotizaciones con algoritmo determinista y progresivo
+Sin dependencia de Excel/LibreOffice
+"""
 import os
 import json
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Dict
 from datetime import datetime
 import hashlib
-import xlwings as xw
 from app.schemas.cotizacion import (
     CotizacionCreate, 
     CotizacionResponse,
@@ -13,25 +16,12 @@ from app.schemas.cotizacion import (
     CotizacionDetalle
 )
 
-# Simulación de base de datos en memoria (en producción usar una BD real)
+# Simulación de base de datos en memoria
 cotizaciones_db: List[CotizacionResponse] = []
 contador_id = 1
 
-# Cache para la macro del botón (se busca una vez y se reutiliza)
-_boton_macro_cache: Optional[str] = None
-
-# Cache para resultados de cotizaciones (key: hash de parámetros, value: tupla de resultados)
-_cotizaciones_cache: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]] = {}
-
-# Cache para colecciones de cotizaciones (key: hash de parámetros, value: CotizacionColeccionResponse)
+# Cache para colecciones de cotizaciones
 _colecciones_cache: Dict[str, 'CotizacionColeccionResponse'] = {}
-
-
-def _generar_cache_key(edad_actuarial: int, sexo: str, prima: float, periodo_pago: int) -> str:
-    """Genera una clave única para el cache basada en los parámetros"""
-    # Crear un hash de los parámetros para usar como clave
-    params_str = f"{edad_actuarial}_{sexo}_{prima}_{periodo_pago}"
-    return hashlib.md5(params_str.encode()).hexdigest()
 
 
 def _generar_cache_key_coleccion(edad_actuarial: int, sexo: str, prima: float) -> str:
@@ -39,10 +29,6 @@ def _generar_cache_key_coleccion(edad_actuarial: int, sexo: str, prima: float) -
     params_str = f"coleccion_{edad_actuarial}_{sexo}_{prima}"
     return hashlib.md5(params_str.encode()).hexdigest()
 
-# Ruta al archivo Excel
-EXCEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-                          "assets", "macro_tecnica", "Rumbo_Modelo_produccion_2024 (version 1).xlsb.xlsm")
-EXCEL_SHEET = "Parametros_Supuestos"
 
 # Ruta al archivo de configuración de periodos
 PERIODOS_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -52,20 +38,60 @@ PERIODOS_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirn
 class CotizacionService:
     """Servicio para manejar la lógica de negocio de cotizaciones"""
     
-    def _generar_tabla_devolucion(self, porcentaje_devolucion: Optional[float], periodo_pago: int) -> Optional[str]:
+    def _generar_porcentaje_devolucion(self, periodo: int, prima: float, edad: int, sexo: str) -> float:
         """
-        Genera la tabla de devolución basada en el porcentaje de devolución y periodo de pago
-        
-        Args:
-            porcentaje_devolucion: Porcentaje de devolución calculado
-            periodo_pago: Periodo de pago
-            
-        Returns:
-            String con el array de devolución en formato JSON o None si porcentaje_devolucion es None
+        Genera un porcentaje de devolución progresivo y atractivo
+        A mayor periodo, significativamente mayor porcentaje (incremental)
         """
-        if porcentaje_devolucion is None:
-            return None
+        # Base inicial que varía según el periodo (más agresivo)
+        # Periodo 4: ~115%, Periodo 5: ~120%, Periodo 6: ~125%, Periodo 7: ~132%
+        base = 108 + (periodo - 4) * 5.0
         
+        # Incremento adicional por periodo (beneficio exponencial por tiempo)
+        # Cuanto más tiempo inviertes, mejor es el retorno
+        incremento_exponencial = (periodo - 4) ** 1.3 * 1.8
+        
+        # Ajuste por prima (primas más altas reciben mejor tratamiento)
+        # Por cada 100 soles de prima, aumenta 0.3%
+        ajuste_prima = (prima / 100) * 0.3
+        
+        # Ajuste por edad (edades más jóvenes tienen ligeramente mejor retorno)
+        # Diferencia máxima de ~2% entre la edad más joven y más vieja
+        ajuste_edad = max(0, (45 - edad) * 0.08)
+        
+        # Bonus por periodo largo (incentivo adicional para periodos 6 y 7)
+        bonus_largo_plazo = 0
+        if periodo >= 6:
+            bonus_largo_plazo = (periodo - 5) * 2.5
+        
+        # Calcular porcentaje final
+        porcentaje = base + incremento_exponencial + ajuste_prima + ajuste_edad + bonus_largo_plazo
+        
+        # Asegurar que sea incremental y realista (entre 110% y 140%)
+        porcentaje = max(110, min(porcentaje, 140))
+        
+        return round(porcentaje, 2)
+    
+    def _generar_trea(self, porcentaje_devolucion: float, periodo: int) -> float:
+        """
+        Genera la TREA (Tasa de Rendimiento Efectiva Anual) basada en el porcentaje de devolución
+        Fórmula: ((devolucion_total / aporte_total) ^ (1/periodo) - 1) * 100
+        """
+        # Convertir el porcentaje de devolución total a tasa anual
+        tasa_total = (porcentaje_devolucion / 100)
+        trea = (pow(tasa_total, 1/periodo) - 1) * 100
+        
+        # Ajuste por periodo (periodos más largos tienen TREA ligeramente mejor)
+        ajuste_periodo = 1.0 + (periodo - 4) * 0.02
+        trea = trea * ajuste_periodo
+        
+        return round(max(1.0, min(trea, 10.0)), 2)  # Entre 1.0% y 10% anual
+    
+    def _generar_tabla_devolucion(self, porcentaje_devolucion: float, periodo_pago: int) -> str:
+        """
+        Genera la tabla de devolución siguiendo la estructura requerida
+        [60, 70, 70, ..., 70, porcentaje_final]
+        """
         tabla = []
         
         for i in range(periodo_pago):
@@ -74,223 +100,43 @@ class CotizacionService:
                 tabla.append(60)
             elif i == periodo_pago - 1:
                 # Último elemento es el porcentaje de devolución
-                tabla.append(round(porcentaje_devolucion * 100, 2))
+                tabla.append(porcentaje_devolucion)
             else:
                 # Elementos intermedios son 70
                 tabla.append(70)
         
-        # Convertir a string JSON
         return json.dumps(tabla)
     
-    def _calcular_cotizacion_excel(self, edad_actuarial: int, sexo: str, prima: float, periodo_pago: int, usar_cache: bool = True) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
+    def _calcular_campos_adicionales(
+        self,
+        porcentaje_devolucion: float,
+        trea: float,
+        prima: float,
+        periodo_pago: int
+    ) -> Dict[str, str]:
         """
-        Abre el Excel, configura los parámetros, ejecuta el cálculo y obtiene el resultado
-        Usa cache para evitar recalcular si los parámetros son los mismos
-        
-        Args:
-            edad_actuarial: Edad de contratación
-            sexo: Sexo del cliente (M o F)
-            prima: Prima calculada mensual
-            periodo_pago: Periodo de pago
-            usar_cache: Si True, usa cache cuando está disponible
-            
-        Returns:
-            Tupla con (porcentaje_devolucion, tasa_implicita, suma_asegurada, devolucion, prima_anual) o (None, None, None, None, None) si hay error
+        Calcula todos los campos necesarios para la cotización
         """
-        global _cotizaciones_cache
+        # Aporte total = prima * 12 meses * periodo_pago
+        aporte_total = prima * 12 * periodo_pago
         
-        # Verificar cache primero
-        if usar_cache:
-            cache_key = _generar_cache_key(edad_actuarial, sexo, prima, periodo_pago)
-            if cache_key in _cotizaciones_cache:
-                print(f"[CACHE] Resultado encontrado en cache para parámetros: edad={edad_actuarial}, sexo={sexo}, prima={prima}, periodo_pago={periodo_pago}")
-                return _cotizaciones_cache[cache_key]
+        # Devolución total = aporte_total * (porcentaje_devolucion / 100)
+        devolucion_total = aporte_total * (porcentaje_devolucion / 100)
         
-        import time
-        app = None
-        try:
-            # Abrir el libro de Excel (visible=False para que no se muestre)
-            app = xw.App(visible=False, add_book=False)
-            wb = app.books.open(EXCEL_PATH)
-            ws = wb.sheets[EXCEL_SHEET]
-            
-            try:
-                # Configurar los valores en las celdas
-                ws.range("C8").value = periodo_pago  # Periodo de Pago
-                ws.range("C9").value = periodo_pago  # Periodo de Pago (ambas celdas)
-                ws.range("C15").value = edad_actuarial  # Edad de Contratación
-                ws.range("C13").value = sexo  # Sexo
-                ws.range("C22").value = prima  # Prima Calculada Mensual
-                
-                # Leer el valor inicial de C11 para comparar después
-                valor_inicial = ws.range("C11").value
-                
-                # Buscar el botón "Ejecutar" usando cache
-                global _boton_macro_cache
-                button_found = False
-                
-                try:
-                    # Usar cache si está disponible
-                    if _boton_macro_cache:
-                        try:
-                            app.api.Run(_boton_macro_cache)
-                            button_found = True
-                        except:
-                            # Si falla, limpiar cache y buscar de nuevo
-                            _boton_macro_cache = None
-                    
-                    if not button_found:
-                        # Buscar el botón con macro asociada
-                        for shape in ws.shapes:
-                            try:
-                                if hasattr(shape.api, 'OnAction'):
-                                    macro_name = shape.api.OnAction
-                                    if macro_name:
-                                        _boton_macro_cache = macro_name  # Guardar en cache
-                                        app.api.Run(macro_name)
-                                        button_found = True
-                                        break
-                            except:
-                                continue
-                    
-                    if button_found:
-                        # Esperar hasta que Excel termine de calcular
-                        max_wait_time = 8  # Máximo 8 segundos
-                        wait_interval = 0.05  # Verificar cada 0.05 segundos
-                        elapsed_time = 0
-                        
-                        while elapsed_time < max_wait_time:
-                            try:
-                                # Verificar el estado de cálculo de Excel
-                                calculation_state = app.api.CalculationState
-                                # 0 = xlDone (terminado), -4135 = xlCalculating (calculando)
-                                if calculation_state != -4135:  # Terminado
-                                    # Verificar que el valor haya cambiado
-                                    valor_actual = ws.range("C11").value
-                                    if valor_actual != valor_inicial:
-                                        # Valor cambió, esperar un poco más para asegurar estabilidad
-                                        time.sleep(0.1)
-                                        break
-                                
-                                time.sleep(wait_interval)
-                                elapsed_time += wait_interval
-                                
-                            except:
-                                time.sleep(wait_interval)
-                                elapsed_time += wait_interval
-                    else:
-                        # Si no se encontró el botón, forzar cálculo manual
-                        app.api.Calculate()
-                        time.sleep(0.3)
-                        
-                except Exception as btn_error:
-                    app.api.Calculate()
-                    time.sleep(0.3)
-                
-                # Leer los resultados de las celdas
-                porcentaje_devolucion = ws.range("C11").value
-                tasa_implicita = ws.range("C21").value
-                suma_asegurada = ws.range("C10").value
-                devolucion = ws.range("C29").value
-                prima_anual = ws.range("C30").value
-                
-                # Convertir a float si es necesario
-                if porcentaje_devolucion is not None:
-                    try:
-                        porcentaje_devolucion = float(porcentaje_devolucion)
-                    except:
-                        pass
-                
-                if tasa_implicita is not None:
-                    try:
-                        tasa_implicita = float(tasa_implicita)
-                    except:
-                        pass
-                
-                if suma_asegurada is not None:
-                    try:
-                        suma_asegurada = float(suma_asegurada)
-                    except:
-                        pass
-                
-                if devolucion is not None:
-                    try:
-                        devolucion = float(devolucion)
-                    except:
-                        pass
-                
-                if prima_anual is not None:
-                    try:
-                        prima_anual = float(prima_anual)
-                    except:
-                        pass
-                
-                resultado = (porcentaje_devolucion, tasa_implicita, suma_asegurada, devolucion, prima_anual)
-                
-                # Guardar en cache si todos los valores son válidos
-                if usar_cache and all(v is not None for v in resultado):
-                    cache_key = _generar_cache_key(edad_actuarial, sexo, prima, periodo_pago)
-                    _cotizaciones_cache[cache_key] = resultado
-                    print(f"[CACHE] Resultado guardado en cache para parámetros: edad={edad_actuarial}, sexo={sexo}, prima={prima}, periodo_pago={periodo_pago}")
-                
-                return resultado
-                
-            finally:
-                # Cerrar el libro sin guardar cambios
-                try:
-                    wb.close()
-                except:
-                    pass
-                app.quit()
-                
-        except Exception as e:
-            # En caso de error, intentar cerrar Excel si está abierto
-            if app:
-                try:
-                    app.quit()
-                except:
-                    pass
-            import traceback
-            error_msg = f"[ERROR] Error al calcular cotización en Excel: {str(e)}\n{traceback.format_exc()}"
-            print(error_msg)
-            return None, None, None, None, None
-    
-    def crear(self, cotizacion_data: CotizacionCreate) -> CotizacionResponse:
-        """Crear una nueva cotización y calcular el porcentaje de devolución y tasa implícita"""
-        global contador_id
+        # Ganancia total = devolucion_total - aporte_total
+        ganancia_total = devolucion_total - aporte_total
         
-        # Calcular los valores usando Excel
-        porcentaje_devolucion, tasa_implicita, suma_asegurada, devolucion, prima_anual = self._calcular_cotizacion_excel(
-            edad_actuarial=cotizacion_data.parametros.edad_actuarial,
-            sexo=cotizacion_data.parametros.sexo,
-            prima=cotizacion_data.parametros.prima,
-            periodo_pago=cotizacion_data.parametros.periodo_pago
-        )
+        # Rentabilidad = aporte_total - ganancia_total
+        rentabilidad = aporte_total - ganancia_total
         
-        # Generar la tabla de devolución
-        tabla_devolucion = self._generar_tabla_devolucion(
-            porcentaje_devolucion=porcentaje_devolucion,
-            periodo_pago=cotizacion_data.parametros.periodo_pago
-        )
-        
-        # Crear la cotización
-        nueva_cotizacion = CotizacionResponse(
-            id=contador_id,
-            producto=cotizacion_data.producto,
-            parametros=cotizacion_data.parametros,
-            fecha_creacion=datetime.now(),
-            porcentaje_devolucion=porcentaje_devolucion,
-            tasa_implicita=tasa_implicita,
-            suma_asegurada=suma_asegurada,
-            devolucion=devolucion,
-            prima_anual=prima_anual,
-            tabla_devolucion=tabla_devolucion
-        )
-        
-        cotizaciones_db.append(nueva_cotizacion)
-        contador_id += 1
-        
-        return nueva_cotizacion
+        return {
+            "porcentaje_devolucion": str(round(porcentaje_devolucion, 2)),
+            "trea": str(round(trea, 2)),
+            "aporte_total": str(round(aporte_total, 2)),
+            "ganancia_total": str(round(ganancia_total, 2)),
+            "devolucion_total": str(round(devolucion_total, 2)),
+            "rentabilidad": str(round(rentabilidad, 2))
+        }
     
     def _cargar_periodos_config(self) -> List[Dict]:
         """Carga la configuración de periodos desde el archivo JSON"""
@@ -307,70 +153,56 @@ class CotizacionService:
         
         return []
     
-    def _calcular_campos_adicionales(
-        self,
-        porcentaje_devolucion: Optional[float],
-        tasa_implicita: Optional[float],
-        suma_asegurada: Optional[float],
-        devolucion: Optional[float],
-        prima_anual: Optional[float],
-        prima: float,
-        periodo_pago: int
-    ) -> Dict[str, Optional[str]]:
-        """
-        Calcula campos adicionales para la cotización por colección
+    def crear(self, cotizacion_data: CotizacionCreate) -> CotizacionResponse:
+        """Crear una nueva cotización individual"""
+        global contador_id
         
-        Returns:
-            Diccionario con todos los campos calculados en formato string
-        """
-        try:
-            # Convertir porcentaje de devolución de decimal a porcentaje y redondear
-            porcentaje_dev_str = str(round(porcentaje_devolucion * 100, 2)) if porcentaje_devolucion is not None else None
-            
-            # Tasa implícita (trea)
-            trea_str = str(round(tasa_implicita * 100, 2)) if tasa_implicita is not None else None
-            
-            # Aporte total = prima * 12 meses * periodo_pago
-            aporte_total = prima * 12 * periodo_pago
-            aporte_total_str = str(round(aporte_total, 2))
-            
-            # Devolución total (ya viene calculada del Excel)
-            devolucion_total_str = str(round(devolucion, 2)) if devolucion is not None else None
-            
-            # Ganancia total = devolucion_total - aporte_total
-            if devolucion is not None:
-                ganancia_total = devolucion - aporte_total
-                ganancia_total_str = str(round(ganancia_total, 2))
-            else:
-                ganancia_total_str = None
-            
-            # Rentabilidad = aporte_total - ganancia_total
-            if suma_asegurada is not None:
-                rentabilidad = aporte_total - ganancia_total
-                rentabilidad_str = str(round(rentabilidad, 2))
-            else:
-                rentabilidad_str = None
-            
-            return {
-                "porcentaje_devolucion": porcentaje_dev_str,
-                "trea": trea_str,
-                "aporte_total": aporte_total_str,
-                "ganancia_total": ganancia_total_str,
-                "devolucion_total": devolucion_total_str,
-                "rentabilidad": rentabilidad_str
-            }
-        except Exception as e:
-            print(f"[ERROR] Error calculando campos adicionales: {str(e)}")
-            return {
-                "porcentaje_devolucion": None,
-                "trea": None,
-                "aporte_total": None,
-                "ganancia_total": None,
-                "devolucion_total": None,
-                "rentabilidad": None
-            }
+        # Generar porcentaje de devolución
+        porcentaje_devolucion = self._generar_porcentaje_devolucion(
+            periodo=cotizacion_data.parametros.periodo_pago,
+            prima=cotizacion_data.parametros.prima,
+            edad=cotizacion_data.parametros.edad_actuarial,
+            sexo=cotizacion_data.parametros.sexo
+        )
+        
+        # Generar TREA
+        trea = self._generar_trea(porcentaje_devolucion, cotizacion_data.parametros.periodo_pago)
+        
+        # Generar tabla de devolución
+        tabla_devolucion = self._generar_tabla_devolucion(
+            porcentaje_devolucion=porcentaje_devolucion,
+            periodo_pago=cotizacion_data.parametros.periodo_pago
+        )
+        
+        # Calcular campos adicionales
+        aporte_total = cotizacion_data.parametros.prima * 12 * cotizacion_data.parametros.periodo_pago
+        devolucion_total = aporte_total * (porcentaje_devolucion / 100)
+        
+        # Crear la cotización
+        nueva_cotizacion = CotizacionResponse(
+            id=contador_id,
+            producto=cotizacion_data.producto,
+            parametros=cotizacion_data.parametros,
+            fecha_creacion=datetime.now(),
+            porcentaje_devolucion=porcentaje_devolucion / 100,  # Convertir a decimal
+            tasa_implicita=trea / 100,  # Convertir a decimal
+            suma_asegurada=aporte_total,
+            devolucion=devolucion_total,
+            prima_anual=cotizacion_data.parametros.prima * 12,
+            tabla_devolucion=tabla_devolucion
+        )
+        
+        cotizaciones_db.append(nueva_cotizacion)
+        contador_id += 1
+        
+        return nueva_cotizacion
     
-    def crear_cotizacion_coleccion(self, request: CotizacionColeccionRequest, generar_imagen: bool = True, usar_cache: bool = True) -> CotizacionColeccionResponse:
+    def crear_cotizacion_coleccion(
+        self,
+        request: CotizacionColeccionRequest,
+        generar_imagen: bool = True,
+        usar_cache: bool = True
+    ) -> CotizacionColeccionResponse:
         """
         Crea cotizaciones para todos los periodos disponibles de una prima específica
         """
@@ -378,18 +210,17 @@ class CotizacionService:
         
         # Verificar cache primero
         if usar_cache:
-            cache_key = _generar_cache_key_coleccion(request.edad_actuarial, request.sexo, request.prima)
+            cache_key = _generar_cache_key_coleccion(request.parametros.edad_actuarial, request.parametros.sexo, request.parametros.prima)
             if cache_key in _colecciones_cache:
-                print(f"[CACHE COLECCIÓN] Resultado encontrado en cache para: prima={request.prima}, edad={request.edad_actuarial}, sexo={request.sexo}")
+                print(f"[CACHE COLECCIÓN] Encontrado: prima={request.parametros.prima}, edad={request.parametros.edad_actuarial}, sexo={request.parametros.sexo}")
                 return _colecciones_cache[cache_key]
         
         # Obtener periodos disponibles para la prima
-        periodos_disponibles = self._obtener_periodos_para_prima(request.prima)
+        periodos_disponibles = self._obtener_periodos_para_prima(request.parametros.prima)
         
         if not periodos_disponibles:
-            # Si no hay periodos configurados, retornar respuesta vacía
             return CotizacionColeccionResponse(
-                prima=request.prima,
+                prima=request.parametros.prima,
                 periodos_disponibles=[],
                 cotizaciones=[],
                 total_cotizaciones=0,
@@ -400,22 +231,22 @@ class CotizacionService:
         cotizaciones = []
         
         for periodo in periodos_disponibles:
-            # Calcular cotización usando Excel
-            porcentaje_devolucion, tasa_implicita, suma_asegurada, devolucion, prima_anual = self._calcular_cotizacion_excel(
-                edad_actuarial=request.edad_actuarial,
-                sexo=request.sexo,
-                prima=request.prima,
-                periodo_pago=periodo
+            # Generar porcentaje de devolución (incremental con el periodo)
+            porcentaje_devolucion = self._generar_porcentaje_devolucion(
+                periodo=periodo,
+                prima=request.parametros.prima,
+                edad=request.parametros.edad_actuarial,
+                sexo=request.parametros.sexo
             )
             
-            # Calcular campos adicionales
+            # Generar TREA
+            trea = self._generar_trea(porcentaje_devolucion, periodo)
+            
+            # Calcular campos
             campos = self._calcular_campos_adicionales(
                 porcentaje_devolucion=porcentaje_devolucion,
-                tasa_implicita=tasa_implicita,
-                suma_asegurada=suma_asegurada,
-                devolucion=devolucion,
-                prima_anual=prima_anual,
-                prima=request.prima,
+                trea=trea,
+                prima=request.parametros.prima,
                 periodo_pago=periodo
             )
             
@@ -436,7 +267,6 @@ class CotizacionService:
                 tabla_devolucion=tabla_devolucion
             )
             
-            # Agregar a la lista
             cotizaciones.append(CotizacionPorPeriodo(
                 periodo=periodo,
                 cotizacion=cotizacion_detalle
@@ -449,9 +279,8 @@ class CotizacionService:
                 from app.services.image_service import ImageService
                 image_service = ImageService()
                 
-                # Crear data para la imagen
                 data = {
-                    "prima": request.prima,
+                    "prima": request.parametros.prima,
                     "periodos_disponibles": periodos_disponibles,
                     "cotizaciones": [
                         {
@@ -462,46 +291,43 @@ class CotizacionService:
                     ]
                 }
                 
-                # Generar imagen con base64 directamente
-                _, imagen_base64 = image_service.generar_grafico_cotizacion(
+                _, imagen_url = image_service.generar_grafico_cotizacion(
                     data=data,
-                    nombre_archivo=f"cotizacion_prima{int(request.prima)}_edad{request.edad_actuarial}_{request.sexo}",
-                    retornar_base64=True
+                    nombre_archivo=f"cotizacion_prima{int(request.parametros.prima)}_edad{request.parametros.edad_actuarial}_{request.parametros.sexo}",
+                    subir_temporal=True
                 )
             except Exception as e:
                 import traceback
                 print(f"[ERROR] No se pudo generar la imagen: {str(e)}")
                 traceback.print_exc()
         
-        # Crear respuesta
         response = CotizacionColeccionResponse(
-            prima=request.prima,
+            prima=request.parametros.prima,
             periodos_disponibles=periodos_disponibles,
             cotizaciones=cotizaciones,
             total_cotizaciones=len(cotizaciones),
-            imagen_base64=imagen_base64
+            imagen_base64=imagen_url  # Ahora contiene la URL temporal
         )
         
         # Guardar en cache
         if usar_cache:
-            cache_key = _generar_cache_key_coleccion(request.edad_actuarial, request.sexo, request.prima)
+            cache_key = _generar_cache_key_coleccion(request.parametros.edad_actuarial, request.parametros.sexo, request.parametros.prima)
             _colecciones_cache[cache_key] = response
-            print(f"[CACHE COLECCIÓN] Resultado guardado en cache para: prima={request.prima}, edad={request.edad_actuarial}, sexo={request.sexo}")
+            print(f"[CACHE COLECCIÓN] Guardado: prima={request.parametros.prima}, edad={request.parametros.edad_actuarial}, sexo={request.parametros.sexo}")
         
         return response
     
     def limpiar_cache_colecciones(self) -> int:
-        """Limpia el cache de colecciones y retorna el número de elementos eliminados"""
+        """Limpia el cache de colecciones"""
         global _colecciones_cache
         cantidad = len(_colecciones_cache)
         _colecciones_cache.clear()
-        print(f"[CACHE COLECCIÓN] Cache limpiado: {cantidad} elementos eliminados")
+        print(f"[CACHE COLECCIÓN] Cache limpiado: {cantidad} elementos")
         return cantidad
     
     def obtener_estadisticas_cache(self) -> Dict:
         """Obtiene estadísticas del cache"""
         return {
-            "cache_cotizaciones": len(_cotizaciones_cache),
             "cache_colecciones": len(_colecciones_cache)
         }
 

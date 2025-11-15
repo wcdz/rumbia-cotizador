@@ -8,9 +8,11 @@ from app.schemas.cotizacion import (
     ImageGenerationRequest,
     ImageGenerationResponse
 )
-from app.services.cotizacion_service import CotizacionService
-from app.services.image_service import ImageService
 import os
+from app.services.image_service import ImageService
+
+# Importar el servicio de cotizaciones (sin dependencias de Excel/LibreOffice)
+from app.services.cotizacion_service import CotizacionService
 
 router = APIRouter()
 service = CotizacionService()
@@ -43,9 +45,9 @@ async def generar_imagen_cotizacion(request: ImageGenerationRequest):
     """
     # Generar la imagen
     ruta_archivo, _ = image_service.generar_grafico_desde_endpoint(
-        prima=request.prima,
-        edad_actuarial=request.edad_actuarial,
-        sexo=request.sexo,
+        prima=request.parametros.prima,
+        edad_actuarial=request.parametros.edad_actuarial,
+        sexo=request.parametros.sexo,
         retornar_base64=False
     )
     
